@@ -1387,7 +1387,6 @@ class GhosttyApp {
         loadLegacyGhosttyConfigIfNeeded(config)
         ghostty_config_load_recursive_files(config)
         loadCmuxAppSupportGhosttyConfigIfNeeded(config)
-        loadCopyOnSelectOverride(config)
         loadCJKFontFallbackIfNeeded(config)
         ghostty_config_finalize(config)
     }
