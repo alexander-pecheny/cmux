@@ -436,11 +436,13 @@ enum TerminalSSHSessionDetector {
             }
 
         for candidate in candidates {
-            guard let arguments = argumentsByPID[candidate.pid],
-                  let session = parseSSHCommandLine(arguments) else {
-                continue
+            guard let arguments = argumentsByPID[candidate.pid] else { continue }
+            let session = candidate.executableName == "mosh-client"
+                ? parseMoshClientCommandLine(arguments)
+                : parseSSHCommandLine(arguments)
+            if let session {
+                return session
             }
-            return session
         }
 
         return nil
@@ -475,7 +477,7 @@ enum TerminalSSHSessionDetector {
 
     private static func isForegroundSSHProcess(_ process: ProcessSnapshot, ttyName: String) -> Bool {
         normalizeTTYName(process.tty) == normalizeTTYName(ttyName) &&
-            process.executableName == "ssh" &&
+            (process.executableName == "ssh" || process.executableName == "mosh-client") &&
             process.pgid > 0 &&
             process.tpgid > 0 &&
             process.pgid == process.tpgid
@@ -577,6 +579,70 @@ enum TerminalSSHSessionDetector {
         }
 
         return arguments.count == argc ? arguments : nil
+    }
+
+    // The mosh wrapper execs mosh-client with a fake argv element of the form
+    // "-# <original mosh args> |" so the original destination survives in ps output.
+    private static let moshValueOptions: Set<String> = [
+        "-p", "--port", "--ssh", "--predict", "--family", "--server",
+        "--client", "--bind-server", "--experimental-remote-ip",
+    ]
+
+    static func parseMoshClientCommandLine(_ arguments: [String]) -> DetectedSSHSession? {
+        guard let marker = arguments.first(where: { $0.hasPrefix("-# ") }) else { return nil }
+        var commandLine = marker.dropFirst(3)
+        if commandLine.hasSuffix("|") {
+            commandLine = commandLine.dropLast()
+        }
+        let tokens = commandLine.split(whereSeparator: \.isWhitespace).map(String.init)
+
+        var destination: String?
+        var useIPv4 = false
+        var useIPv6 = false
+        var index = 0
+        while index < tokens.count {
+            let token = tokens[index]
+            if token == "--" {
+                let nextIndex = index + 1
+                if nextIndex < tokens.count {
+                    destination = tokens[nextIndex]
+                }
+                break
+            }
+            if !token.hasPrefix("-") {
+                destination = token
+                break
+            }
+            switch token {
+            case "-4":
+                useIPv4 = true
+                useIPv6 = false
+                index += 1
+            case "-6":
+                useIPv6 = true
+                useIPv4 = false
+                index += 1
+            case let value where moshValueOptions.contains(value):
+                index += 2
+            default:
+                index += 1
+            }
+        }
+
+        guard let destination, !destination.isEmpty else { return nil }
+        return DetectedSSHSession(
+            destination: destination,
+            port: nil,
+            identityFile: nil,
+            configFile: nil,
+            jumpHost: nil,
+            controlPath: nil,
+            useIPv4: useIPv4,
+            useIPv6: useIPv6,
+            forwardAgent: false,
+            compressionEnabled: false,
+            sshOptions: []
+        )
     }
 
     private static func parseSSHCommandLine(_ arguments: [String]) -> DetectedSSHSession? {
