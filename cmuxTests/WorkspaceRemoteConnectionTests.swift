@@ -969,6 +969,57 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertEqual(session?.destination, "lawrence@example.com")
     }
 
+    func testDetectsForegroundMoshSessionForTTY() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "/dev/ttys004",
+            processes: [
+                .init(pid: 2145, pgid: 1967, tpgid: 1967, tty: "ttys004", executableName: "mosh-client"),
+            ],
+            argumentsByPID: [
+                2145: [
+                    "/Users/test/.local/bin/mosh-client",
+                    "-# vps-he |",
+                    "77.42.90.19", "60002",
+                ],
+            ]
+        )
+
+        XCTAssertEqual(session?.destination, "vps-he")
+        XCTAssertNil(session?.port)
+    }
+
+    func testDetectsForegroundMoshSessionSkippingValueOptions() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "/dev/ttys004",
+            processes: [
+                .init(pid: 2145, pgid: 1967, tpgid: 1967, tty: "ttys004", executableName: "mosh-client"),
+            ],
+            argumentsByPID: [
+                2145: [
+                    "mosh-client",
+                    "-# -p 60001 --predict=adaptive lawrence@example.com |",
+                    "192.0.2.1", "60001",
+                ],
+            ]
+        )
+
+        XCTAssertEqual(session?.destination, "lawrence@example.com")
+    }
+
+    func testIgnoresDirectlyInvokedMoshClientWithoutWrapperArgs() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "ttys004",
+            processes: [
+                .init(pid: 2145, pgid: 1967, tpgid: 1967, tty: "ttys004", executableName: "mosh-client"),
+            ],
+            argumentsByPID: [
+                2145: ["mosh-client", "192.0.2.1", "60001"],
+            ]
+        )
+
+        XCTAssertNil(session)
+    }
+
     func testIgnoresBackgroundSSHProcessForTTY() {
         let session = TerminalSSHSessionDetector.detectForTesting(
             ttyName: "ttys004",
