@@ -97,8 +97,14 @@ class UpdateController {
     }
 
     /// Start the updater. If startup fails, the error is shown via the custom UI.
+    /// Skipped for non-release bundle IDs (e.g. clipboard-fix side-builds) to avoid
+    /// overwriting a custom build with an official release.
     func startUpdaterIfNeeded() {
         guard !didStartUpdater else { return }
+        if Bundle.main.bundleIdentifier != "com.cmuxterm.app" {
+            UpdateLogStore.shared.append("updater skipped (non-release bundle: \(Bundle.main.bundleIdentifier ?? "nil"))")
+            return
+        }
         ensureSparkleInstallationCache()
 #if DEBUG
         // Keep the permission-related defaults resettable for UI tests even though the

@@ -479,6 +479,14 @@ struct SocketControlSettings {
         if isStagingBundleIdentifier(bundleIdentifier) {
             return "/tmp/cmux-staging.sock"
         }
+        // Non-release com.cmuxterm.app.* variants (e.g. clipboard-fix side-builds)
+        // get their own socket so they don't conflict with the official release app.
+        if let bundleIdentifier,
+           bundleIdentifier.hasPrefix("com.cmuxterm.app."),
+           bundleIdentifier != "com.cmuxterm.app" {
+            let suffix = bundleIdentifier.replacingOccurrences(of: "com.cmuxterm.app.", with: "")
+            return "/tmp/cmux-\(suffix).sock"
+        }
         return resolvedStableDefaultSocketPath(
             currentUserID: currentUserID,
             probeStableDefaultPathEntry: probeStableDefaultPathEntry

@@ -1256,8 +1256,9 @@ class TabManager: ObservableObject {
 #endif
             let nextTabCount = snapshot.tabs.count + 1
             sentryBreadcrumb("workspace.create", data: ["tabCount": nextTabCount])
-            let explicitWorkingDirectory = normalizedWorkingDirectory(overrideWorkingDirectory)
-            let workingDirectory = explicitWorkingDirectory ?? snapshot.preferredWorkingDirectory
+            // Only pass an explicit working directory (e.g. from socket/CLI commands).
+            // When nil, Ghostty uses its own working-directory / *-inherit-working-directory config.
+            let workingDirectory = normalizedWorkingDirectory(overrideWorkingDirectory)
             let inheritedConfig = workspaceCreationConfigTemplate(
                 inheritedTerminalFontPoints: snapshot.inheritedTerminalFontPoints
             )
@@ -1292,12 +1293,12 @@ class TabManager: ObservableObject {
                 updatedTabs.append(newWorkspace)
             }
             tabs = updatedTabs
-            if let explicitWorkingDirectory,
+            if let workingDirectory,
                let terminalPanel = newWorkspace.focusedTerminalPanel {
                 scheduleInitialWorkspaceGitMetadataRefresh(
                     workspaceId: newWorkspace.id,
                     panelId: terminalPanel.id,
-                    directory: explicitWorkingDirectory
+                    directory: workingDirectory
                 )
             }
             if eagerLoadTerminal {
