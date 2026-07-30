@@ -2081,6 +2081,59 @@ func shouldSuppressWindowMoveForFolderDrag(window: NSWindow, event: NSEvent) -> 
     return shouldSuppressWindowMoveForFolderDrag(hitView: hitView)
 }
 
+/// Ghostty binds Cmd+Option+← / → to previous/next tab, which wins over cmux's pane-focus
+/// default on those keys. Returns -1 or 1, or nil while a text field has focus.
+func commandArrowSurfaceNavigationDelta(
+    flags: NSEvent.ModifierFlags,
+    keyCode: UInt16,
+    isEditingText: Bool
+) -> Int? {
+    let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        .subtracting([.numericPad, .function, .capsLock])
+    guard normalized == [.command, .option], !isEditingText else { return nil }
+    switch keyCode {
+    case 123: return -1
+    case 124: return 1
+    default: return nil
+    }
+}
+
+struct ActivationWindowSnapshot {
+    let isMainTerminal: Bool
+    let isVisible: Bool
+    let isMiniaturized: Bool
+    let isOnActiveSpace: Bool
+    let isOnScreen: Bool
+    let isMainWindow: Bool
+}
+
+private func activationRaisePriority(_ window: ActivationWindowSnapshot) -> Int {
+    (window.isMainWindow ? 2 : 0) + (window.isOnActiveSpace ? 1 : 0)
+}
+
+/// Cmd+Tab sometimes activates cmux without raising anything: the menu bar switches
+/// but every window stays buried behind the app the user came from. Returns the index
+/// of the window to raise, or nil when something is already on screen.
+func mainWindowToRaiseAfterActivation(_ windows: [ActivationWindowSnapshot]) -> Int? {
+    let anythingOnScreen = windows.contains {
+        $0.isVisible && !$0.isMiniaturized && $0.isOnActiveSpace && $0.isOnScreen
+    }
+    guard !anythingOnScreen else { return nil }
+
+    var best: Int?
+    for (index, window) in windows.enumerated() {
+        guard window.isMainTerminal, window.isVisible, !window.isMiniaturized else { continue }
+        guard let current = best else {
+            best = index
+            continue
+        }
+        if activationRaisePriority(window) > activationRaisePriority(windows[current]) {
+            best = index
+        }
+    }
+    return best
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation {
     nonisolated(unsafe) static var shared: AppDelegate?
@@ -2799,6 +2852,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         sentryBreadcrumb("app.didBecomeActive", category: "lifecycle", data: [
             "tabCount": tabManager?.tabs.count ?? 0
         ])
+        scheduleBuriedWindowRecovery()
         if TelemetrySettings.enabledForCurrentLaunch && !isRunningUnderXCTestCached {
             PostHogAnalytics.shared.trackActive(reason: "didBecomeActive")
         }
@@ -2815,6 +2869,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             tab.triggerNotificationFocusFlash(panelId: surfaceId, requiresSplit: false, shouldFocus: false)
         }
         notificationStore.markRead(forTabId: tabId, surfaceId: surfaceId)
+    }
+
+    private var buriedWindowRecoveryGeneration = 0
+
+    private func scheduleBuriedWindowRecovery() {
+        buriedWindowRecoveryGeneration &+= 1
+        let generation = buriedWindowRecoveryGeneration
+        // Late enough that a healthy activation, including a Space switch animation,
+        // has already reordered windows.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, generation == self.buriedWindowRecoveryGeneration else { return }
+            self.raiseMainWindowIfBuried()
+        }
+    }
+
+    private func raiseMainWindowIfBuried() {
+        guard NSApp.isActive, !NSApp.isHidden else { return }
+        let windows = NSApp.windows
+        let snapshots = windows.map { window in
+            ActivationWindowSnapshot(
+                isMainTerminal: isMainTerminalWindow(window),
+                isVisible: window.isVisible,
+                isMiniaturized: window.isMiniaturized,
+                isOnActiveSpace: window.isOnActiveSpace,
+                isOnScreen: window.occlusionState.contains(.visible),
+                isMainWindow: window === NSApp.mainWindow
+            )
+        }
+        guard let index = mainWindowToRaiseAfterActivation(snapshots) else { return }
+        let target = windows[index]
+        NSLog(
+            "[cmux] activation left every window buried, raising %@ (windows=%d)",
+            target.identifier?.rawValue ?? "cmux.main",
+            windows.count
+        )
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+        target.makeKeyAndOrderFront(nil)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -9765,6 +9856,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .prevSurface)) {
             tabManager?.selectPreviousSurface()
+            return true
+        }
+        if let delta = commandArrowSurfaceNavigationDelta(
+            flags: event.modifierFlags,
+            keyCode: event.keyCode,
+            isEditingText: NSApp.keyWindow?.firstResponder is NSText
+        ) {
+            if delta > 0 {
+                tabManager?.selectNextSurface()
+            } else {
+                tabManager?.selectPreviousSurface()
+            }
             return true
         }
 

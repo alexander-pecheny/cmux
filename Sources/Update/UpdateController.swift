@@ -47,8 +47,30 @@ enum UpdateSettings {
     }
 }
 
+/// The appcast serves official cmux releases, so installing one replaces whatever bundle
+/// is running — a fork or side-by-side build gets overwritten by upstream. Only the
+/// identities that actually ship through the appcast may run the updater.
+func bundleIdentifierReceivesAppcastUpdates(
+    _ bundleIdentifier: String?,
+    isUITest: Bool = ProcessInfo.processInfo.environment["CMUX_UI_TEST_MODE"] == "1"
+) -> Bool {
+    if isUITest { return true }
+    let shipped: Set<String> = ["com.cmuxterm.app", "com.cmuxterm.app.nightly"]
+    return shipped.contains(bundleIdentifier ?? "")
+}
+
 /// Controller for managing Sparkle updates in cmux.
 class UpdateController {
+    private lazy var receivesAppcastUpdates: Bool = {
+        let eligible = bundleIdentifierReceivesAppcastUpdates(Bundle.main.bundleIdentifier)
+        if !eligible {
+            UpdateLogStore.shared.append(
+                "updater disabled for bundle \(Bundle.main.bundleIdentifier ?? "unknown")"
+            )
+        }
+        return eligible
+    }()
+
     private(set) var updater: SPUUpdater
     private let userDriver: UpdateDriver
     private var installCancellable: AnyCancellable?
@@ -100,6 +122,7 @@ class UpdateController {
     /// Skipped for non-release bundle IDs (e.g. clipboard-fix side-builds) to avoid
     /// overwriting a custom build with an official release.
     func startUpdaterIfNeeded() {
+        guard receivesAppcastUpdates else { return }
         guard !didStartUpdater else { return }
         if Bundle.main.bundleIdentifier != "com.cmuxterm.app" {
             UpdateLogStore.shared.append("updater skipped (non-release bundle: \(Bundle.main.bundleIdentifier ?? "nil"))")
@@ -242,6 +265,12 @@ class UpdateController {
     func checkForUpdatesWhenReady(retries: Int = 10) {
         readyCheckWorkItem?.cancel()
         readyCheckWorkItem = nil
+        guard receivesAppcastUpdates else {
+            viewModel.state = .notFound(.init(acknowledgement: { [weak self] in
+                self?.viewModel.state = .idle
+            }))
+            return
+        }
         startUpdaterIfNeeded()
         ensureSparkleInstallationCache()
         let canCheck = updater.canCheckForUpdates
