@@ -177,3 +177,17 @@ final class CommandArrowSurfaceNavigationTests: XCTestCase {
         )
     }
 }
+
+final class AppcastEligibilityTests: XCTestCase {
+    func testOnlyShippedBundlesReceiveUpdates() {
+        XCTAssertTrue(bundleIdentifierReceivesAppcastUpdates("com.cmuxterm.app", isUITest: false))
+        XCTAssertTrue(bundleIdentifierReceivesAppcastUpdates("com.cmuxterm.app.nightly", isUITest: false))
+        XCTAssertFalse(bundleIdentifierReceivesAppcastUpdates("com.cmuxterm.app.pecheny-fork", isUITest: false))
+        XCTAssertFalse(bundleIdentifierReceivesAppcastUpdates("com.cmuxterm.app.debug.some-tag", isUITest: false))
+        XCTAssertFalse(bundleIdentifierReceivesAppcastUpdates(nil, isUITest: false))
+    }
+
+    func testUITestsKeepTheUpdaterEnabled() {
+        XCTAssertTrue(bundleIdentifierReceivesAppcastUpdates("com.cmuxterm.app.debug", isUITest: true))
+    }
+}
