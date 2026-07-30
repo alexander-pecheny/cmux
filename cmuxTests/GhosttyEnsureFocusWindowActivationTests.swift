@@ -68,3 +68,64 @@ final class GhosttyEnsureFocusWindowActivationTests: XCTestCase {
         )
     }
 }
+
+@MainActor
+final class BuriedWindowActivationRecoveryTests: XCTestCase {
+    private func snapshot(
+        isMainTerminal: Bool = true,
+        isVisible: Bool = true,
+        isMiniaturized: Bool = false,
+        isOnActiveSpace: Bool = true,
+        isOnScreen: Bool = false,
+        isMainWindow: Bool = false
+    ) -> ActivationWindowSnapshot {
+        ActivationWindowSnapshot(
+            isMainTerminal: isMainTerminal,
+            isVisible: isVisible,
+            isMiniaturized: isMiniaturized,
+            isOnActiveSpace: isOnActiveSpace,
+            isOnScreen: isOnScreen,
+            isMainWindow: isMainWindow
+        )
+    }
+
+    func testRaisesBuriedMainWindow() {
+        XCTAssertEqual(mainWindowToRaiseAfterActivation([snapshot()]), 0)
+    }
+
+    func testSkipsWhenAWindowIsAlreadyOnScreen() {
+        XCTAssertNil(mainWindowToRaiseAfterActivation([snapshot(isOnScreen: true)]))
+    }
+
+    func testAnyVisibleCmuxWindowCountsAsOnScreen() {
+        let windows = [
+            snapshot(),
+            snapshot(isMainTerminal: false, isOnScreen: true),
+        ]
+        XCTAssertNil(mainWindowToRaiseAfterActivation(windows))
+    }
+
+    func testPrefersTheMainWindowOverOtherBuriedWindows() {
+        let windows = [
+            snapshot(),
+            snapshot(isMainWindow: true),
+        ]
+        XCTAssertEqual(mainWindowToRaiseAfterActivation(windows), 1)
+    }
+
+    func testPrefersTheActiveSpaceOverAnotherSpace() {
+        let windows = [
+            snapshot(isOnActiveSpace: false),
+            snapshot(),
+        ]
+        XCTAssertEqual(mainWindowToRaiseAfterActivation(windows), 1)
+    }
+
+    func testIgnoresMiniaturizedAndNonTerminalWindows() {
+        let windows = [
+            snapshot(isVisible: false, isMiniaturized: true),
+            snapshot(isMainTerminal: false),
+        ]
+        XCTAssertNil(mainWindowToRaiseAfterActivation(windows))
+    }
+}
