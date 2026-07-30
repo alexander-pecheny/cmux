@@ -2081,6 +2081,23 @@ func shouldSuppressWindowMoveForFolderDrag(window: NSWindow, event: NSEvent) -> 
     return shouldSuppressWindowMoveForFolderDrag(hitView: hitView)
 }
 
+/// Ghostty binds Cmd+Option+← / → to previous/next tab, which wins over cmux's pane-focus
+/// default on those keys. Returns -1 or 1, or nil while a text field has focus.
+func commandArrowSurfaceNavigationDelta(
+    flags: NSEvent.ModifierFlags,
+    keyCode: UInt16,
+    isEditingText: Bool
+) -> Int? {
+    let normalized = flags.intersection(.deviceIndependentFlagsMask)
+        .subtracting([.numericPad, .function, .capsLock])
+    guard normalized == [.command, .option], !isEditingText else { return nil }
+    switch keyCode {
+    case 123: return -1
+    case 124: return 1
+    default: return nil
+    }
+}
+
 struct ActivationWindowSnapshot {
     let isMainTerminal: Bool
     let isVisible: Bool
@@ -9839,6 +9856,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .prevSurface)) {
             tabManager?.selectPreviousSurface()
+            return true
+        }
+        if let delta = commandArrowSurfaceNavigationDelta(
+            flags: event.modifierFlags,
+            keyCode: event.keyCode,
+            isEditingText: NSApp.keyWindow?.firstResponder is NSText
+        ) {
+            if delta > 0 {
+                tabManager?.selectNextSurface()
+            } else {
+                tabManager?.selectPreviousSurface()
+            }
             return true
         }
 

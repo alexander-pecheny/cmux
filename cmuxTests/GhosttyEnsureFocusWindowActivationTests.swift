@@ -129,3 +129,51 @@ final class BuriedWindowActivationRecoveryTests: XCTestCase {
         XCTAssertNil(mainWindowToRaiseAfterActivation(windows))
     }
 }
+
+@MainActor
+final class CommandArrowSurfaceNavigationTests: XCTestCase {
+    func testCommandOptionArrowsMoveBetweenSurfaces() {
+        XCTAssertEqual(
+            commandArrowSurfaceNavigationDelta(
+                flags: [.command, .option], keyCode: 124, isEditingText: false
+            ),
+            1
+        )
+        XCTAssertEqual(
+            commandArrowSurfaceNavigationDelta(
+                flags: [.command, .option], keyCode: 123, isEditingText: false
+            ),
+            -1
+        )
+    }
+
+    func testIgnoresTextEditing() {
+        XCTAssertNil(
+            commandArrowSurfaceNavigationDelta(
+                flags: [.command, .option], keyCode: 123, isEditingText: true
+            )
+        )
+    }
+
+    func testIgnoresOtherKeysAndModifierCombinations() {
+        XCTAssertNil(
+            commandArrowSurfaceNavigationDelta(
+                flags: [.command, .option], keyCode: 125, isEditingText: false
+            )
+        )
+        XCTAssertNil(
+            commandArrowSurfaceNavigationDelta(flags: [.command], keyCode: 123, isEditingText: false)
+        )
+        XCTAssertNil(
+            commandArrowSurfaceNavigationDelta(
+                flags: [.command, .option, .shift], keyCode: 123, isEditingText: false
+            )
+        )
+        XCTAssertEqual(
+            commandArrowSurfaceNavigationDelta(
+                flags: [.command, .option, .function], keyCode: 124, isEditingText: false
+            ),
+            1
+        )
+    }
+}
