@@ -78,6 +78,21 @@ struct DetectedSSHSession: Equatable {
     ) throws -> [String] {
         try uploadDroppedFilesSync(fileURLs, operation: operation)
     }
+
+    static func runProcessForTesting(
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval,
+        operation: TerminalImageTransferOperation? = nil
+    ) throws -> ProcessOverrideResultForTesting {
+        let result = try runProcess(
+            executable: executable,
+            arguments: arguments,
+            timeout: timeout,
+            operation: operation
+        )
+        return (result.status, result.stdout, result.stderr)
+    }
 #endif
 
     private func uploadDroppedFilesSync(
@@ -245,6 +260,31 @@ struct DetectedSSHSession: Equatable {
         let stderr: String
     }
 
+    private final class CapturedOutput: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stdoutData = Data()
+        private var stderrData = Data()
+
+        func append(_ data: Data, toStderr: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            if toStderr {
+                stderrData.append(data)
+            } else {
+                stdoutData.append(data)
+            }
+        }
+
+        var text: (stdout: String, stderr: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (
+                String(data: stdoutData, encoding: .utf8) ?? "",
+                String(data: stderrData, encoding: .utf8) ?? ""
+            )
+        }
+    }
+
     private static func runProcess(
         executable: String,
         arguments: [String],
@@ -267,53 +307,60 @@ struct DetectedSSHSession: Equatable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+
         try operation?.throwIfCancelled()
         try process.run()
-        operation?.installCancellationHandler {
-            if process.isRunning {
-                process.terminate()
+        let pid = process.processIdentifier
+
+        // Waiting for the child is what tells us the work is over, and the pipes closing
+        // is the only signal that survives the exit notification never arriving -- which
+        // is what happens when something else in the process reaps the child first.
+        // Blocking a thread in waitUntilExit() instead leaks that thread for the life of
+        // the app and leaves the upload wedged with the file already on the far end.
+        let output = CapturedOutput()
+        let drained = DispatchGroup()
+        for (handle, toStderr) in [
+            (stdoutPipe.fileHandleForReading, false),
+            (stderrPipe.fileHandleForReading, true),
+        ] {
+            drained.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                output.append(handle.readDataToEndOfFile(), toStderr: toStderr)
+                drained.leave()
             }
+        }
+
+        operation?.installCancellationHandler {
+            _ = Darwin.kill(pid, SIGTERM)
         }
         defer { operation?.clearCancellationHandler() }
 
-        let exitSignal = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            process.waitUntilExit()
-            exitSignal.signal()
-        }
-
-        func terminateProcessAndWait() {
-            process.terminate()
-            _ = exitSignal.wait(timeout: .now() + 1)
-            if process.isRunning {
-                _ = Darwin.kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
-            }
-        }
-
-        if exitSignal.wait(timeout: .now() + timeout) == .timedOut {
+        if drained.wait(timeout: .now() + timeout) == .timedOut {
+            _ = Darwin.kill(pid, SIGKILL)
+            _ = drained.wait(timeout: .now() + 1)
             if operation?.isCancelled == true {
-                terminateProcessAndWait()
                 throw TerminalImageTransferExecutionError.cancelled
             }
-            terminateProcessAndWait()
             throw NSError(domain: "cmux.detected-ssh.drop", code: 3, userInfo: [
                 NSLocalizedDescriptionKey: "scp timed out",
             ])
         }
 
-        let stdout = String(
-            data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        let stderr = String(
-            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
         if operation?.isCancelled == true {
             throw TerminalImageTransferExecutionError.cancelled
         }
-        return CommandResult(status: process.terminationStatus, stdout: stdout, stderr: stderr)
+
+        let (stdout, stderr) = output.text
+        // terminationStatus is only readable once Foundation has seen the child exit. If
+        // it never does, an empty stderr from a command that closed both pipes is the
+        // best evidence of success we have.
+        let sawExit = exited.wait(timeout: .now() + 2) == .success
+        let status = sawExit
+            ? process.terminationStatus
+            : (stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1)
+        return CommandResult(status: status, stdout: stdout, stderr: stderr)
     }
 
     private static func bestErrorLine(stderr: String, stdout: String) -> String? {

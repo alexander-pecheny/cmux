@@ -1096,6 +1096,42 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertNil(session)
     }
 
+    func testRunProcessReportsOutputAndStatus() throws {
+        let result = try DetectedSSHSession.runProcessForTesting(
+            executable: "/bin/sh",
+            arguments: ["-c", "printf out; printf err >&2; exit 3"],
+            timeout: 10
+        )
+
+        XCTAssertEqual(result.status, 3)
+        XCTAssertEqual(result.stdout, "out")
+        XCTAssertEqual(result.stderr, "err")
+    }
+
+    func testRunProcessReadsOutputLargerThanAPipeBuffer() throws {
+        let result = try DetectedSSHSession.runProcessForTesting(
+            executable: "/bin/sh",
+            arguments: ["-c", "yes abcdefgh | head -c 400000"],
+            timeout: 20
+        )
+
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout.utf8.count, 400_000)
+    }
+
+    func testRunProcessTimesOutWithoutBlockingPastTheDeadline() {
+        let started = Date()
+        XCTAssertThrowsError(
+            try DetectedSSHSession.runProcessForTesting(
+                executable: "/bin/sleep",
+                arguments: ["30"],
+                timeout: 1
+            )
+        )
+
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    }
+
     @MainActor
     func testProxyOnlyErrorsKeepSSHWorkspaceConnectedAndLoggedInSidebar() {
         let workspace = Workspace()
