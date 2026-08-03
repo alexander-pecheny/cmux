@@ -1020,6 +1020,68 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertNil(session)
     }
 
+    func testDetectsForkingMoshLauncherWithoutWrapperMarker() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "ttys004",
+            processes: [
+                .init(pid: 2140, pgid: 2140, tpgid: 2140, tty: "ttys004", executableName: "mosh"),
+                .init(pid: 2145, pgid: 2140, tpgid: 2140, tty: "ttys004", executableName: "mosh-client"),
+            ],
+            argumentsByPID: [
+                2140: ["/Users/test/.local/bin/mosh", "-p", "60001", "lawrence@example.com"],
+                2145: ["mosh-client", "192.0.2.1", "60001"],
+            ]
+        )
+
+        XCTAssertEqual(session?.destination, "lawrence@example.com")
+        XCTAssertNil(session?.port)
+    }
+
+    func testPrefersWrapperMarkerOverForkingMoshLauncherArguments() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "ttys004",
+            processes: [
+                .init(pid: 2140, pgid: 2140, tpgid: 2140, tty: "ttys004", executableName: "mosh"),
+                .init(pid: 2145, pgid: 2140, tpgid: 2140, tty: "ttys004", executableName: "mosh-client"),
+            ],
+            argumentsByPID: [
+                2140: ["mosh", "stale@example.com"],
+                2145: ["mosh-client", "-# -6 vps-he |", "2001:db8::1", "60002"],
+            ]
+        )
+
+        XCTAssertEqual(session?.destination, "vps-he")
+        XCTAssertEqual(session?.useIPv6, true)
+    }
+
+    func testIgnoresForkingMoshLauncherWithoutDestination() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "ttys004",
+            processes: [
+                .init(pid: 2140, pgid: 2140, tpgid: 2140, tty: "ttys004", executableName: "mosh"),
+            ],
+            argumentsByPID: [
+                2140: ["mosh", "--help"],
+            ]
+        )
+
+        XCTAssertNil(session)
+    }
+
+    func testIgnoresBackgroundMoshLauncherForTTY() {
+        let session = TerminalSSHSessionDetector.detectForTesting(
+            ttyName: "ttys004",
+            processes: [
+                .init(pid: 2140, pgid: 2140, tpgid: 1967, tty: "ttys004", executableName: "mosh"),
+            ],
+            argumentsByPID: [
+                2140: ["mosh", "lawrence@example.com"],
+            ]
+        )
+
+        XCTAssertNil(session)
+    }
+
     func testIgnoresBackgroundSSHProcessForTTY() {
         let session = TerminalSSHSessionDetector.detectForTesting(
             ttyName: "ttys004",

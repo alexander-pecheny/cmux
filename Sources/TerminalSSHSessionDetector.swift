@@ -437,9 +437,12 @@ enum TerminalSSHSessionDetector {
 
         for candidate in candidates {
             guard let arguments = argumentsByPID[candidate.pid] else { continue }
-            let session = candidate.executableName == "mosh-client"
-                ? parseMoshClientCommandLine(arguments)
-                : parseSSHCommandLine(arguments)
+            let session: DetectedSSHSession?
+            switch candidate.executableName {
+            case "mosh": session = parseMoshCommandLine(arguments)
+            case "mosh-client": session = parseMoshClientCommandLine(arguments)
+            default: session = parseSSHCommandLine(arguments)
+            }
             if let session {
                 return session
             }
@@ -449,6 +452,7 @@ enum TerminalSSHSessionDetector {
     }
 
     private static let psPath = "/bin/ps"
+    private static let foregroundExecutableNames: Set<String> = ["ssh", "mosh", "mosh-client"]
     private static let noArgumentFlags = Set("46AaCfGgKkMNnqsTtVvXxYy")
     private static let valueArgumentFlags = Set("BbcDEeFIiJLlmOopQRSWw")
     private static let filteredSSHOptionKeys: Set<String> = [
@@ -477,7 +481,7 @@ enum TerminalSSHSessionDetector {
 
     private static func isForegroundSSHProcess(_ process: ProcessSnapshot, ttyName: String) -> Bool {
         normalizeTTYName(process.tty) == normalizeTTYName(ttyName) &&
-            (process.executableName == "ssh" || process.executableName == "mosh-client") &&
+            foregroundExecutableNames.contains(process.executableName) &&
             process.pgid > 0 &&
             process.tpgid > 0 &&
             process.pgid == process.tpgid
@@ -581,21 +585,29 @@ enum TerminalSSHSessionDetector {
         return arguments.count == argc ? arguments : nil
     }
 
-    // The mosh wrapper execs mosh-client with a fake argv element of the form
-    // "-# <original mosh args> |" so the original destination survives in ps output.
     private static let moshValueOptions: Set<String> = [
         "-p", "--port", "--ssh", "--predict", "--family", "--server",
         "--client", "--bind-server", "--experimental-remote-ip",
     ]
 
+    // Launchers that exec into mosh-client (upstream's Perl wrapper) leave the original
+    // destination only in a fake argv element of the form "-# <original mosh args> |".
     static func parseMoshClientCommandLine(_ arguments: [String]) -> DetectedSSHSession? {
         guard let marker = arguments.first(where: { $0.hasPrefix("-# ") }) else { return nil }
         var commandLine = marker.dropFirst(3)
         if commandLine.hasSuffix("|") {
             commandLine = commandLine.dropLast()
         }
-        let tokens = commandLine.split(whereSeparator: \.isWhitespace).map(String.init)
+        return parseMoshArguments(commandLine.split(whereSeparator: \.isWhitespace).map(String.init))
+    }
 
+    // Launchers that fork instead of exec (rmosh) stay alive alongside mosh-client, so the
+    // real argv is still readable and no marker is needed.
+    static func parseMoshCommandLine(_ arguments: [String]) -> DetectedSSHSession? {
+        parseMoshArguments(Array(arguments.dropFirst()))
+    }
+
+    private static func parseMoshArguments(_ tokens: [String]) -> DetectedSSHSession? {
         var destination: String?
         var useIPv4 = false
         var useIPv6 = false
